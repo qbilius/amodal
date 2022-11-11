@@ -1,0 +1,11 @@
+torch
+torchvision
+pytorch-lightning
+
+svgwrite
+cairosvg
+
+# dev
+autopep8
+flake8
+mypy
