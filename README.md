@@ -1,5 +1,3 @@
-<div align="center">    
- 
 # Amodal completion with transformers   
  
 ## Description  

@@ -1,12 +1,31 @@
 from pathlib import Path
-import argparse
+import argparse, shutil
 
+import numpy as np
 import torch, torch.utils.data
 from torch.nn import functional as F
 import torchvision
 import pytorch_lightning as pl
 
 import dataset, model
+
+
+# worker_init_fn must be picklable so we list them here
+def set_numpy_seed(worker_id, seed):
+    torch_seed = torch.initial_seed() % 2**30
+    return np.random.seed(torch_seed + worker_id + seed)
+
+
+def set_numpy_seed_train(worker_id):
+    return set_numpy_seed(worker_id, 0)
+
+
+def set_numpy_seed_val(worker_id):
+    return set_numpy_seed(worker_id, 1000)
+
+
+def set_numpy_seed_test(worker_id):
+    return set_numpy_seed(worker_id, 2000)
 
 
 class DataModule(pl.LightningDataModule):
@@ -16,22 +35,23 @@ class DataModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers
 
-    def _get_dataloader(self, size: int):
+    def _get_dataloader(self, size: int, stage: str):
         return torch.utils.data.DataLoader(
             dataset.GenSVGDataset(size=size),
             batch_size=self.batch_size,
             num_workers=self.num_workers,
+            worker_init_fn=globals()[f'set_numpy_seed_{stage}'],
             pin_memory=True  # good for CUDA
         )
 
     def train_dataloader(self):
-        return self._get_dataloader(size=128 * 1000)
+        return self._get_dataloader(size=128 * 50000, stage='train')
 
     def val_dataloader(self):
-        return self._get_dataloader(size=128)
+        return self._get_dataloader(size=128, stage='val')
 
     def test_dataloader(self):
-        return self._get_dataloader(size=128)
+        return self._get_dataloader(size=128, stage='test')
 
 
 class Model(pl.LightningModule):
@@ -61,7 +81,8 @@ class Model(pl.LightningModule):
             return x, y, y_hat
 
     def training_step(self, batch, batch_idx):
-        return self._evaluate(batch, 'train')
+        loss = self._evaluate(batch, 'train')
+        return loss
 
     def validation_step(self, batch, batch_idx):
         return self._evaluate(batch, 'val')
@@ -82,23 +103,25 @@ class Model(pl.LightningModule):
         return self._evaluate(batch, 'test')
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(),
-                                 lr=self.hparams.learning_rate)
-        # return torch.optim.SGD(self.parameters(),
-        #    lr=self.hparams.learning_rate,
-        #    momentum=self.hparams.momentum)
+        # optimizer = torch.optim.AdamW(self.parameters(),
+        #                               lr=self.hparams.learning_rate)
+        optimizer = torch.optim.SGD(self.parameters(),
+                                    lr=self.hparams.learning_rate,
+                                    momentum=self.hparams.momentum)
+        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+            optimizer, milestones=[100, 150], gamma=0.1)
+        return [optimizer], [lr_scheduler]
 
     @staticmethod
     def add_model_specific_args(parent_parser):
-        parser = argparse.ArgumentParser(
-            parents=[parent_parser], add_help=False)
-        parser.add_argument('--learning_rate', type=float, default=1e-4)
+        parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
+        parser.add_argument('--learning_rate', type=float, default=10)
         parser.add_argument('--momentum', type=float, default=.9)
         return parser
 
 
 def main():
-    pl.seed_everything(1)
+    pl.seed_everything(1, workers=True)
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--output_path', default='output', action='store_true')
@@ -108,7 +131,13 @@ def main():
     parser = pl.Trainer.add_argparse_args(parser)
     args = parser.parse_args()
 
-    version = 'test' if args.test else None
+    if args.test:
+        version = 'test'
+        path = Path(args.output_path) / version
+        if path.exists():
+            shutil.rmtree(path)
+    else:
+        version = None
 
     data = DataModule.from_argparse_args(args)
     model = Model(**vars(args))
@@ -119,7 +148,7 @@ def main():
         default_root_dir=args.output_path,
         enable_checkpointing=False,
         max_epochs=1,
-        val_check_interval=100,
+        val_check_interval=500,
         logger=pl.loggers.TensorBoardLogger(save_dir=args.output_path, name='', version=version)
     )
     trainer.fit(model, data)

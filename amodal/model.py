@@ -4,10 +4,10 @@ from torch import nn
 
 class AttentionBlock(nn.Module):
     def __init__(self,
-                 embed_dim,  # =3 * 3 * 4,
-                 hidden_dim,  # =3 * 3 * 4 * 4,
-                 num_heads,  # =4,
-                 dropout,  # =.2
+                 embed_dim,
+                 hidden_dim,
+                 num_heads,
+                 dropout,
                  ):
         """Basic attention block
 
@@ -21,7 +21,7 @@ class AttentionBlock(nn.Module):
         super().__init__()
 
         self.layer_norm_1 = nn.LayerNorm(embed_dim)
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads)
+        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
         self.layer_norm_2 = nn.LayerNorm(embed_dim)
         self.linear = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
@@ -32,24 +32,21 @@ class AttentionBlock(nn.Module):
         )
 
     def forward(self, x):
-        # breakpoint()
-        inp_x = self.layer_norm_1(x)
-        x = x + self.attn(inp_x, inp_x, inp_x)[0]
-        x = x + self.linear(self.layer_norm_2(x))
+        x_norm = self.layer_norm_1(x)
+        x = x + self.attn(x_norm, x_norm, x_norm)[0]
+        x_norm = self.layer_norm_2(x)
+        x = x + self.linear(x_norm)
         return x
 
 
 class VisionTransformer(nn.Module):
     def __init__(
         self,
-        # embed_dim=3 * 3 * 3 * 2,
-        # hidden_dim=3 * 3 * 4 * 4,
         image_size=32,
         num_channels=3,
         num_heads=4,
         num_layers=2,
         patch_size=4,
-        # num_patches=...,
         dropout=.2,
         *args,
         **kwargs
@@ -90,11 +87,9 @@ class VisionTransformer(nn.Module):
 
     def forward(self, x):
         x = self.embedding(x)
-        x = x + self.pos_embedding
+        # x = x + self.pos_embedding
         x = self.dropout(x)
-        x = x.transpose(0, 1)
         x = self.transformer(x)
-        x = x.transpose(0, 1)
         x = self.prediction(x)
         return x
 
@@ -132,4 +127,31 @@ class VisionTransformer(nn.Module):
         x = x.permute(0, 3, 1, 4, 2, 5)
         x = x.flatten(2, 3)
         x = x.flatten(3, 4)
+        return x
+
+
+class Linear(VisionTransformer):
+
+    def __init__(
+        self,
+        image_size=32,
+        patch_size=4,
+        *args,
+        **kwargs
+    ):
+        """Sanity check
+
+        Args:
+            image_size (int, optional): Image size. Defaults to 32.
+            patch_size (int, optional): Patch size. Defaults to 4.
+        """
+        super().__init__()
+        self.num_patches = (image_size // patch_size) ** 2
+        self.param_w = nn.Parameter(torch.tensor(1.))
+        self.param_b = nn.Parameter(torch.tensor(0.))
+
+    def forward(self, x):
+        x = x.reshape(-1, self.num_patches, 3, self.patch_size, self.patch_size)
+        x = self.param_w * x.mean(axis=2) + self.param_b
+        x = x.flatten(2, 3)
         return x
