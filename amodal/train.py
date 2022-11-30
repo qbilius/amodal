@@ -7,46 +7,32 @@ from torch.nn import functional as F
 import torchvision
 import pytorch_lightning as pl
 
-import dataset, model
+from amodal import dataset, model
 
 
 DATA_PATH = Path('/Users/qbilius/datasets/amodal/')
 
 
-# worker_init_fn must be picklable so we list them here
-def set_numpy_seed(worker_id, seed):
-    torch_seed = torch.initial_seed() % 2**30
-    return np.random.seed(torch_seed + worker_id + seed)
-
-
-def set_numpy_seed_train(worker_id):
-    return set_numpy_seed(worker_id, 0)
-
-
-def set_numpy_seed_val(worker_id):
-    return set_numpy_seed(worker_id, 1000)
-
-
-def set_numpy_seed_test(worker_id):
-    return set_numpy_seed(worker_id, 2000)
-
-
 class DataModule(pl.LightningDataModule):
 
-    def __init__(self, batch_size=100, image_size=16, patch_size=4, num_workers=0):
+    def __init__(self, batch_size=100, image_size=16, patch_size=4):
         super().__init__()
         self.batch_size = batch_size
         self.image_size = image_size
         self.patch_size = patch_size
-        self.num_workers = num_workers
 
     def _get_dataloader(self, size: int, stage: str):
+        seed = hash(stage) % 2**32
+        data = dataset.SVGDataset(
+            data_file=DATA_PATH / f'{stage}.npy',
+            size=size,
+            image_size=self.image_size,
+            patch_size=self.patch_size,
+            seed=seed)
         return torch.utils.data.DataLoader(
-            dataset.SVGDataset(
-                data_file=DATA_PATH / f'{stage}.npy', size=size, image_size=self.image_size, patch_size=self.patch_size),
+            data,
             batch_size=self.batch_size,
-            num_workers=self.num_workers,
-            worker_init_fn=globals()[f'set_numpy_seed_{stage}'],
+            num_workers=0,  # fast enough or maybe even the fastest way
             pin_memory=True  # good for CUDA
         )
 
@@ -62,7 +48,7 @@ class DataModule(pl.LightningDataModule):
 
 class Model(pl.LightningModule):
 
-    def __init__(self, learning_rate=.1, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.model = model.VisionTransformer(*args, **kwargs)
@@ -95,16 +81,18 @@ class Model(pl.LightningModule):
 
     def validation_epoch_end(self, outputs):
         x, y, y_hat = outputs[0]
+
         # make all images with C=3 channels (B, C, H, W)
-        x = torch.sigmoid(x)  # TODO: make a proper de-normalization
+        x = x * .3 + .12  # de-normalization
         y = y.repeat([1, 3, 1, 1])
         y_hat = self.model.patch_to_img(torch.sigmoid(y_hat)).repeat([1, 3, 1, 1])
         ims = torch.stack([x, y, y_hat]).transpose(1, 0).flatten(0, 1)
+
         # make a 3 x 5 grid of (x, y, y_hat)
         grid = torchvision.utils.make_grid(ims[:15], nrow=3, pad_value=1)
+
         # log to tensorboard
         self.logger.experiment.add_image('images', grid, global_step=self.global_step)
-        # breakpoint()
 
     def test_step(self, batch, batch_idx):
         return self._evaluate(batch, 'test')
@@ -115,9 +103,9 @@ class Model(pl.LightningModule):
         optimizer = torch.optim.SGD(self.parameters(),
                                     lr=self.hparams.learning_rate,
                                     momentum=self.hparams.momentum)
-        lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-            optimizer, milestones=[90, 120], gamma=0.1)
-        return [optimizer], [lr_scheduler]
+        # lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
+        #     optimizer, milestones=[90, 120], gamma=0.1)
+        return optimizer
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -167,7 +155,7 @@ def main():
         logger=pl.loggers.TensorBoardLogger(save_dir=args.output_path, name='', version=version),
         callbacks=callbacks
     )
-    trainer.fit(model, data)  # , ckpt_path=DATA_PATH / 'last.ckpt')
+    trainer.fit(model, data)
 
 
 if __name__ == '__main__':
