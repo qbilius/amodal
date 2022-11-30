@@ -4,36 +4,36 @@ from torch import nn
 
 class AttentionBlock(nn.Module):
     def __init__(self,
-                 embed_dim,
-                 hidden_dim,
-                 num_heads,
-                 dropout,
+                 embed_dim: int,
+                 hidden_dim: int,
+                 num_heads: int,
+                 dropout: float,
                  ):
         """Basic attention block
 
         Args:
-            embed_dim (int, optional): Dimensionality of input and attention feature vectors. Defaults to 3*3*4.
-            hidden_dim (int, optional): Dimensionality of hidden layer in feed-forward network (usually 2-4x larger than embed_dim). Defaults to 3*3*4*4.
-            num_heads (int, optional): Number of heads to use in the Multi-Head Attention block. Defaults to 4.
-            dropout (float, optional): Amount of dropout to apply in the feed-forward network. Defaults to .2.
+            embed_dim (int): Dimensionality of input and attention feature vectors. Defaults to 3*3*4.
+            hidden_dim (int): Dimensionality of hidden layer in feed-forward network (usually 2-4x larger than embed_dim). Defaults to 3*3*4*4.
+            num_heads (int): Number of heads to use in the Multi-Head Attention block. Defaults to 4.
+            dropout (float): Amount of dropout to apply in the feed-forward network. Defaults to .2.
         """
 
         super().__init__()
 
         self.layer_norm_1 = nn.LayerNorm(embed_dim)
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
+        self.attention = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
         self.layer_norm_2 = nn.LayerNorm(embed_dim)
         self.linear = nn.Sequential(
             nn.Linear(embed_dim, hidden_dim),
             nn.GELU(),
-            nn.Dropout(dropout),
+            # nn.Dropout(dropout),
             nn.Linear(hidden_dim, embed_dim),
-            nn.Dropout(dropout),
+            # nn.Dropout(dropout),
         )
 
     def forward(self, x):
         x_norm = self.layer_norm_1(x)
-        x = x + self.attn(x_norm, x_norm, x_norm)[0]
+        x = x + self.attention(x_norm, x_norm, x_norm)[0]
         x_norm = self.layer_norm_2(x)
         x = x + self.linear(x_norm)
         return x
@@ -42,11 +42,12 @@ class AttentionBlock(nn.Module):
 class VisionTransformer(nn.Module):
     def __init__(
         self,
-        image_size=32,
+        image_size=16,
         num_channels=3,
         num_heads=4,
-        num_layers=2,
+        num_layers=4,
         patch_size=4,
+        embed_dim=64,
         dropout=.2,
         *args,
         **kwargs
@@ -70,26 +71,30 @@ class VisionTransformer(nn.Module):
         self.image_size = image_size
         self.patch_size = patch_size
         inp_dim = num_channels * (patch_size**2)
-        embed_dim = inp_dim * 2
-        num_patches = (image_size // patch_size) ** 2
+        self.embed_dim = embed_dim  # inp_dim * 2
+        self.num_patches = (image_size // patch_size) ** 2
 
-        self.embedding = nn.Linear(inp_dim, embed_dim)
-        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches, embed_dim))
-        self.dropout = nn.Dropout(dropout)
+        self.embedding = nn.Linear(inp_dim, self.embed_dim)
+        self.pos_embedding = nn.Parameter(torch.randn(1, self.num_patches, self.embed_dim))
+        # self.dropout = nn.Dropout(dropout)
         self.transformer = nn.Sequential(
             *(AttentionBlock(
-                embed_dim,
-                embed_dim * 2,
+                self.embed_dim,
+                self.embed_dim * 2,
                 num_heads,
                 dropout=dropout) for _ in range(num_layers))
         )
-        self.prediction = nn.Linear(embed_dim, self.patch_size ** 2)
+        self.prediction = nn.Linear(self.embed_dim, self.patch_size ** 2)
 
     def forward(self, x):
         x = self.embedding(x)
-        # x = x + self.pos_embedding
-        x = self.dropout(x)
+        x = x + self.pos_embedding
+        # x = self.dropout(x)
         x = self.transformer(x)
+        # reshape to original dimensions such that output can be reshaped into an image
+        # x = x.reshape(x.shape[0], self.patch_size ** 2,
+        #               self.num_patches, self.embed_dim // self.num_patches)
+        # x = x.mean(axis=-1)
         x = self.prediction(x)
         return x
 
@@ -123,7 +128,8 @@ class VisionTransformer(nn.Module):
         batch_size = patches.shape[0]
         num_h = self.image_size // self.patch_size
         num_w = self.image_size // self.patch_size
-        x = patches.reshape(batch_size, num_h, num_w, -1, self.patch_size, self.patch_size)
+        x = patches.reshape(batch_size, num_h, num_w, -1,
+                            self.patch_size, self.patch_size)
         x = x.permute(0, 3, 1, 4, 2, 5)
         x = x.flatten(2, 3)
         x = x.flatten(3, 4)
@@ -134,7 +140,7 @@ class Linear(VisionTransformer):
 
     def __init__(
         self,
-        image_size=32,
+        image_size=16,
         patch_size=4,
         *args,
         **kwargs
@@ -142,7 +148,7 @@ class Linear(VisionTransformer):
         """Sanity check
 
         Args:
-            image_size (int, optional): Image size. Defaults to 32.
+            image_size (int, optional): Image size. Defaults to 16.
             patch_size (int, optional): Patch size. Defaults to 4.
         """
         super().__init__()

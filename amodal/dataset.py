@@ -1,21 +1,84 @@
 from typing import Tuple
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import svgwrite
 import cairosvg
 from PIL import Image
+import tqdm
 
 import torch
 import torchvision
 from torchvision import transforms as T
 
 
+class SVGDataset(torchvision.datasets.VisionDataset):
+
+    def __init__(self,
+                 data_file,
+                 size=50000,
+                 image_size=16,
+                 patch_size=4,
+                 ) -> None:
+        super().__init__(None)
+        self.data_file = Path(data_file)
+        self.size = size
+        self.image_size = image_size
+        self.patch_size = patch_size
+
+        if not self.data_file.exists():
+            self.generate()
+        else:
+            self.load()
+
+        self.transform = T.Compose([
+            T.ToTensor(),
+            T.Normalize(mean=[0.12, 0.12, 0.12],
+                        std=[0.3, 0.3, 0.3]),
+        ])
+        self.target_transform = T.ToTensor()
+
+    def generate(self):
+        data_path = self.data_file.parent
+        data_path.mkdir(parents=True, exist_ok=True)
+
+        generator = OverlappingShapes(image_size=self.image_size)
+        samples = []
+        for _ in tqdm.trange(self.size, desc=f'Generating {self.data_file.stem}'):
+            samples.append(generator())
+
+        self.samples = np.stack(samples)
+        np.save(self.data_file, self.samples)
+
+    def load(self):
+        self.samples = np.load(self.data_file)
+
+    def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            index (int): Index
+
+        Returns:
+            tuple: (image, target) where target is class_index of the target class.
+        """
+        img, target = self.samples[index]
+        # convert to binary class per pixel, keep 3 dimensions
+        target = (target > 0).any(axis=2, keepdims=True).astype(np.float32)
+
+        img = self.transform(img)
+        target = self.target_transform(target)
+        return img, target
+
+    def __len__(self) -> int:
+        return self.size
+
+
 class GenSVGDataset(torchvision.datasets.VisionDataset):
 
     def __init__(self,
                  size=50000,
-                 image_size=32,
+                 image_size=16,
                  patch_size=4,
                  ) -> None:
         super().__init__(None)
@@ -45,7 +108,8 @@ class GenSVGDataset(torchvision.datasets.VisionDataset):
         target = (target > 0).any(axis=2, keepdims=True).astype(np.float32)
 
         img = self.transform(img)
-        target = self.target_transform(target)
+        # target = self.target_transform(target)
+        target = torch.randint(0, 9, size=(1,)).item()
         return img, target
 
     def __len__(self) -> int:
@@ -54,7 +118,7 @@ class GenSVGDataset(torchvision.datasets.VisionDataset):
 
 class SVG:
 
-    def __init__(self, image_size=32) -> np.ndarray:
+    def __init__(self, image_size=16) -> np.ndarray:
         self.image_size = image_size
 
     def __call__(self):
@@ -108,7 +172,7 @@ class OverlappingShapes(SVG):
 
     COLORS = ['white', 'gray', 'red', 'yellow', 'green', 'cyan', 'blue', 'magenta']
 
-    def __init__(self, image_size=32, max_iter=100) -> np.ndarray:
+    def __init__(self, image_size=16, max_iter=100) -> np.ndarray:
         super().__init__(image_size=image_size)
         self.max_iter = max_iter
 

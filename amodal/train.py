@@ -10,6 +10,9 @@ import pytorch_lightning as pl
 import dataset, model
 
 
+DATA_PATH = Path('/Users/qbilius/datasets/amodal/')
+
+
 # worker_init_fn must be picklable so we list them here
 def set_numpy_seed(worker_id, seed):
     torch_seed = torch.initial_seed() % 2**30
@@ -30,14 +33,17 @@ def set_numpy_seed_test(worker_id):
 
 class DataModule(pl.LightningDataModule):
 
-    def __init__(self, batch_size=128, num_workers=8):
+    def __init__(self, batch_size=100, image_size=16, patch_size=4, num_workers=0):
         super().__init__()
         self.batch_size = batch_size
+        self.image_size = image_size
+        self.patch_size = patch_size
         self.num_workers = num_workers
 
     def _get_dataloader(self, size: int, stage: str):
         return torch.utils.data.DataLoader(
-            dataset.GenSVGDataset(size=size),
+            dataset.SVGDataset(
+                data_file=DATA_PATH / f'{stage}.npy', size=size, image_size=self.image_size, patch_size=self.patch_size),
             batch_size=self.batch_size,
             num_workers=self.num_workers,
             worker_init_fn=globals()[f'set_numpy_seed_{stage}'],
@@ -45,18 +51,18 @@ class DataModule(pl.LightningDataModule):
         )
 
     def train_dataloader(self):
-        return self._get_dataloader(size=128 * 50000, stage='train')
+        return self._get_dataloader(size=50000, stage='train')
 
     def val_dataloader(self):
-        return self._get_dataloader(size=128, stage='val')
+        return self._get_dataloader(size=1000, stage='val')
 
     def test_dataloader(self):
-        return self._get_dataloader(size=128, stage='test')
+        return self._get_dataloader(size=1000, stage='test')
 
 
 class Model(pl.LightningModule):
 
-    def __init__(self, learning_rate=3e-4, *args, **kwargs):
+    def __init__(self, learning_rate=.1, *args, **kwargs):
         super().__init__()
         self.save_hyperparameters()
         self.model = model.VisionTransformer(*args, **kwargs)
@@ -89,15 +95,16 @@ class Model(pl.LightningModule):
 
     def validation_epoch_end(self, outputs):
         x, y, y_hat = outputs[0]
-
         # make all images with C=3 channels (B, C, H, W)
+        x = torch.sigmoid(x)  # TODO: make a proper de-normalization
         y = y.repeat([1, 3, 1, 1])
-        y_hat = self.model.patch_to_img(y_hat).repeat([1, 3, 1, 1])
+        y_hat = self.model.patch_to_img(torch.sigmoid(y_hat)).repeat([1, 3, 1, 1])
         ims = torch.stack([x, y, y_hat]).transpose(1, 0).flatten(0, 1)
         # make a 3 x 5 grid of (x, y, y_hat)
-        grid = torchvision.utils.make_grid(ims[:15], nrow=3)
+        grid = torchvision.utils.make_grid(ims[:15], nrow=3, pad_value=1)
         # log to tensorboard
         self.logger.experiment.add_image('images', grid, global_step=self.global_step)
+        # breakpoint()
 
     def test_step(self, batch, batch_idx):
         return self._evaluate(batch, 'test')
@@ -109,13 +116,13 @@ class Model(pl.LightningModule):
                                     lr=self.hparams.learning_rate,
                                     momentum=self.hparams.momentum)
         lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(
-            optimizer, milestones=[100, 150], gamma=0.1)
+            optimizer, milestones=[90, 120], gamma=0.1)
         return [optimizer], [lr_scheduler]
 
     @staticmethod
     def add_model_specific_args(parent_parser):
         parser = argparse.ArgumentParser(parents=[parent_parser], add_help=False)
-        parser.add_argument('--learning_rate', type=float, default=10)
+        parser.add_argument('--learning_rate', type=float, default=.1)
         parser.add_argument('--momentum', type=float, default=.9)
         return parser
 
@@ -142,16 +149,25 @@ def main():
     data = DataModule.from_argparse_args(args)
     model = Model(**vars(args))
 
+    callbacks = [
+        pl.callbacks.ModelCheckpoint(
+            dirpath=DATA_PATH,
+            save_top_k=0,
+            save_last=True
+        )
+    ]
+
     trainer = pl.Trainer.from_argparse_args(
         args,
         accelerator='auto',
         default_root_dir=args.output_path,
-        enable_checkpointing=False,
-        max_epochs=1,
+        # enable_checkpointing=False,
+        max_epochs=150,
         val_check_interval=500,
-        logger=pl.loggers.TensorBoardLogger(save_dir=args.output_path, name='', version=version)
+        logger=pl.loggers.TensorBoardLogger(save_dir=args.output_path, name='', version=version),
+        callbacks=callbacks
     )
-    trainer.fit(model, data)
+    trainer.fit(model, data)  # , ckpt_path=DATA_PATH / 'last.ckpt')
 
 
 if __name__ == '__main__':
