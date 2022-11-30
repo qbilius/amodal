@@ -20,8 +20,10 @@ class SVGDataset(torchvision.datasets.VisionDataset):
                  size=50000,
                  image_size=16,
                  patch_size=4,
+                 seed=None
                  ) -> None:
         super().__init__(None)
+        np.random.seed(seed)
         self.data_file = Path(data_file)
         self.size = size
         self.image_size = image_size
@@ -34,8 +36,7 @@ class SVGDataset(torchvision.datasets.VisionDataset):
 
         self.transform = T.Compose([
             T.ToTensor(),
-            T.Normalize(mean=[0.12, 0.12, 0.12],
-                        std=[0.3, 0.3, 0.3]),
+            T.Normalize(mean=.12, std=.3)
         ])
         self.target_transform = T.ToTensor()
 
@@ -63,8 +64,8 @@ class SVGDataset(torchvision.datasets.VisionDataset):
             tuple: (image, target) where target is class_index of the target class.
         """
         img, target = self.samples[index]
-        # convert to binary class per pixel, keep 3 dimensions
-        target = (target > 0).any(axis=2, keepdims=True).astype(np.float32)
+        # convert to a kind of a binary mask but with aliasing, keep 3 dimensions
+        target = target.max(axis=2, keepdims=True) / target.max()
 
         img = self.transform(img)
         target = self.target_transform(target)
