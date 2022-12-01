@@ -10,7 +10,7 @@ import pytorch_lightning as pl
 from amodal import dataset, model
 
 
-DATA_PATH = Path('/Users/qbilius/datasets/amodal/')
+OUTPUT_PATH = Path('/Users/qbilius/datasets/amodal/')
 
 
 class DataModule(pl.LightningDataModule):
@@ -24,7 +24,7 @@ class DataModule(pl.LightningDataModule):
     def _get_dataloader(self, size: int, stage: str):
         seed = hash(stage) % 2**32
         data = dataset.SVGDataset(
-            data_file=DATA_PATH / f'{stage}.npy',
+            data_file=OUTPUT_PATH / f'{stage}.npy',
             size=size,
             image_size=self.image_size,
             patch_size=self.patch_size,
@@ -119,27 +119,30 @@ def main():
     pl.seed_everything(1, workers=True)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output_path', default='output', action='store_true')
+    parser.add_argument('--output_path', default=OUTPUT_PATH)
     parser.add_argument('--test', default=False, action='store_true')
     parser = DataModule.add_argparse_args(parser)
     parser = Model.add_model_specific_args(parser)
     parser = pl.Trainer.add_argparse_args(parser)
     args = parser.parse_args()
 
+    output_path = Path(args.output_path)
+
     if args.test:
         version = 'test'
-        path = Path(args.output_path) / version
-        if path.exists():
-            shutil.rmtree(path)
+        log_dir = output_path / version
+        if log_dir.exists():
+            shutil.rmtree(log_dir)
     else:
-        version = None
+        version = max([int(p.stem.split('_')[1]) for p in output_path.glob('version_*')]) + 1
+        log_dir = output_path / f'version_{version}'
 
     data = DataModule.from_argparse_args(args)
     model = Model(**vars(args))
 
     callbacks = [
         pl.callbacks.ModelCheckpoint(
-            dirpath=DATA_PATH,
+            dirpath=log_dir,
             save_top_k=0,
             save_last=True
         )
@@ -152,7 +155,7 @@ def main():
         # enable_checkpointing=False,
         max_epochs=150,
         val_check_interval=500,
-        logger=pl.loggers.TensorBoardLogger(save_dir=args.output_path, name='', version=version),
+        logger=pl.loggers.TensorBoardLogger(save_dir=output_path, name='', version=version),
         callbacks=callbacks
     )
     trainer.fit(model, data)
